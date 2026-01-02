@@ -4,7 +4,8 @@
 
 ;; Author: niku <niku@niku.name>
 ;; URL: https://github.com/niku/markdown-preview-eww
-;; Version: 0.0.1
+;; Package-Version: 20160111.1502
+;; Package-Revision: 5853f836425c
 ;; Package-Requires: ((emacs "24.4"))
 
 
@@ -34,41 +35,68 @@
 ;; This package provides the realtime markdown preview by eww.
 
 ;;; Code:
-
 (defvar markdown-preview-eww-process-name "convert-from-md-to-html"
   "Process name of a converter.")
 
-(defvar markdown-preview-eww-output-file-name "markdown-preview-eww-result.html"
-  "Filename of converted html.")
+(defvar-local markdown-preview-eww--output-file nil
+  "The absolute path to the temporary output file for this buffer.")
 
 (defvar markdown-preview-eww-waiting-idling-second 1
   "Seconds of convert waiting")
 
 (defun markdown-preview-eww-convert-command (output-file-name)
-  (format "require \"redcarpet\"
+  (message "Generating convert command for output file: %s" output-file-name)
+  (format "$stderr.reopen($stdout)
+require \"redcarpet\"
 
 markdown = Redcarpet::Markdown.new(Redcarpet::Render::HTML)
 while doc = gets(\"\\0\")
   doc.chomp!(\"\\0\")
   File.write(\"%s\", markdown.render(doc))
-end
-" output-file-name))
+end" output-file-name))
 
-(defun markdown-preview-eww--do-convert ()
-  (let ((doc (buffer-substring-no-properties (point-min) (point-max)))
-        (cb (current-buffer)))
-    (process-send-string markdown-preview-eww-process-name (concat doc "\0"))
-    (eww-open-file markdown-preview-eww-output-file-name)
-    (switch-to-buffer cb)))
+(add-to-list 'exec-path "/home/numa/.rbenv/bin/")
+(add-to-list 'exec-path
+             (file-name-directory
+              (string-trim-right
+               (shell-command-to-string
+                (format "%s which ruby" (executable-find "rbenv"))))))
+
+(defun markdown-preview-eww--do-convert (ofile markdown-preview-mdbuf)
+  (let* ((doc (with-current-buffer markdown-preview-mdbuf
+                (buffer-substring-no-properties (point-min) (point-max)))))
+    (message "Idle timer fired for markdown to HTML conversion.")
+    (message "Output file: %s" ofile)
+    (or (get-process markdown-preview-eww-process-name)
+        (error "No conversion process"))
+    (if (and ofile (get-process markdown-preview-eww-process-name))
+        (progn (message "Converting markdown to HTML...")
+               (process-send-string
+                (get-process markdown-preview-eww-process-name)
+                (concat doc "\0"))
+               (eww-open-file ofile)
+               (kill-process
+                (get-process markdown-preview-eww-process-name)))
+      (message "No output file or conversion process found."))))
 
 ;;;### autoload
 (defun markdown-preview-eww ()
   "Start a realtime markdown preview."
   (interactive)
-  (let ((process-connection-type nil)
-        (convert-command (markdown-preview-eww-convert-command markdown-preview-eww-output-file-name)))
-    (start-process markdown-preview-eww-process-name nil "ruby" "-e" convert-command)
-    (run-with-idle-timer markdown-preview-eww-waiting-idling-second nil 'markdown-preview-eww--do-convert)))
+  (when (executable-find "ruby")
+    (let* ((process-connection-type nil)
+           (output-file (make-temp-file "markdown-preview-" nil ".html"))
+           (convert-command (markdown-preview-eww-convert-command output-file))
+           (preview-buf (current-buffer)))
+      (start-process markdown-preview-eww-process-name
+                     nil
+                     (executable-find "ruby")
+                     "-e"
+                     convert-command)
+      (run-with-idle-timer markdown-preview-eww-waiting-idling-second nil
+                           #'(lambda ()
+                               (markdown-preview-eww--do-convert
+                                output-file preview-buf))))))
 
 (provide 'markdown-preview-eww)
 ;;; markdown-preview-eww.el ends here
